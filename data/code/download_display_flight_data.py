@@ -1,5 +1,9 @@
 import requests
 import pandas as pd
+# from pyhive import hive
+import pandas as pd
+from hdfs import InsecureClient
+
 
 # Replace with your actual API key
 API_KEY = "00de11eb3903efd40b93d649920d94fc"
