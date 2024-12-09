@@ -1,8 +1,10 @@
+#https://medium.com/@pagrutia/setting-up-a-big-data-environment-on-macos-hadoop-kafka-hive-and-zookeeper-312cf3fbafe3
+
 import requests
 import pandas as pd
 
 # Replace with your actual API key
-API_KEY = "00de11eb3903efd40b93d649920d94fc"
+API_KEY = "00de11eb3903efd40b93d64920d94fc"
 url = "https://api.aviationstack.com/v1/airports"
 
 # Parameters to retrieve airport data
