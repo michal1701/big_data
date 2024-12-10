@@ -6,7 +6,7 @@ from hdfs import InsecureClient
 
 
 # Replace with your actual API key
-API_KEY = "00de11eb3903efd40b93d649920d94fc"
+API_KEY = "4d494f33bafe446f3e1b7101a6a5cada"
 url = "https://api.aviationstack.com/v1/flights"
 
 # Parameters to retrieve flights data
