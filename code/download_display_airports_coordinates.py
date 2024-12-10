@@ -5,7 +5,7 @@ import pandas as pd
 
 # Replace with your actual API key
 API_KEY = "4d494f33bafe446f3e1b7101a6a5cada"
-url = "https://api.aviationstack.com/v1/flights"
+url = "https://api.aviationstack.com/v1/airports"
 
 # Parameters to retrieve airport data
 params = {
