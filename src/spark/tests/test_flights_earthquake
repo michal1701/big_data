@@ -1,0 +1,85 @@
+
+def enrich_flights_with_earthquakes(enriched_flights_df, earthquake_df, spatial_radius_km=25):
+    """
+    Enrich flights data with earthquake information:
+    - Join flights with earthquakes within a spatial radius.
+    - Add columns indicating earthquake occurrence, type, magnitude, and location.
+    
+    Args:
+    - enriched_flights_df: DataFrame containing enriched flight data with airport details.
+    - earthquake_df: DataFrame containing earthquake data.
+    - spatial_radius_km: Radius in kilometers to consider proximity.
+
+    Returns:
+    - DataFrame with flights enriched with earthquake occurrence details.
+    """
+    # Convert spatial radius from kilometers to degrees (~111.32 km per degree latitude)
+    proximity_threshold = spatial_radius_km / 111.32
+
+    # Join flights and earthquakes based on proximity
+    flights_with_earthquakes = enriched_flights_df.join(
+        earthquake_df,
+        (
+            abs(enriched_flights_df["arrival_latitude"] - earthquake_df["latitude"]) < proximity_threshold
+        ) & (
+            abs(enriched_flights_df["arrival_longitude"] - earthquake_df["longitude"]) < proximity_threshold
+        ),
+        how="left"  # Keep all flights
+    )
+
+    # Add column to indicate if an earthquake occurred
+    flights_with_earthquakes = flights_with_earthquakes.withColumn(
+        "earthquake_occurred",
+        when(col("magnitude").isNotNull(), True).otherwise(False)
+    )
+
+    # Check if 'type' column exists in the earthquake DataFrame
+    if "type" in earthquake_df.columns:
+        flights_with_earthquakes = flights_with_earthquakes.withColumn(
+            "earthquake_type",
+            col("type")
+        )
+    else:
+        flights_with_earthquakes = flights_with_earthquakes.withColumn(
+            "earthquake_type",
+            lit(None)  # Add a column with null values
+        )
+
+    # Select necessary columns and include earthquake details
+    enriched_flights = flights_with_earthquakes.select(
+        enriched_flights_df["*"],  # Include all columns from flights data
+        col("earthquake_occurred"),
+        col("earthquake_type"),
+        col("magnitude").alias("earthquake_magnitude"),
+        col("latitude").alias("earthquake_latitude"),
+        col("longitude").alias("earthquake_longitude")
+    )
+
+    return enriched_flights
+
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, abs, lit, when
+
+# Initialize Spark session
+spark = SparkSession.builder.master("local").appName("TestJoin").getOrCreate()
+
+# Minimal flight dataset
+flights_data = [
+    {"arrival_latitude": 40.0, "arrival_longitude": -75.0, "arrival_iata": "JFK"},
+    {"arrival_latitude": 34.0, "arrival_longitude": -118.0, "arrival_iata": "LAX"},
+]
+flights_df = spark.createDataFrame(flights_data)
+
+# Minimal earthquake dataset
+earthquake_data = [
+    {"latitude": 40.1, "longitude": -75.1, "magnitude": 5.0, "type": "tectonic"},
+    {"latitude": 34.1, "longitude": -118.1, "magnitude": 4.5, "type": "volcanic"},
+]
+earthquake_df = spark.createDataFrame(earthquake_data)
+
+# Call the function
+spatial_radius_km = 15  # Set the spatial radius
+enriched_df = enrich_flights_with_earthquakes(flights_df, earthquake_df, spatial_radius_km=spatial_radius_km)
+
+# Show results
+enriched_df.show(truncate=False)
