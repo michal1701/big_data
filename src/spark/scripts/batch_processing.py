@@ -2,71 +2,75 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import col
 from data_ingestion import ingest_all_world_airport_data, merge_airport_datasets, ingest_earthquake_data, ingest_flight_data, ingest_airport_data, save_to_hdfs 
 import os
-from pyspark.sql.functions import col, lit, abs, count, avg, max, when
+from pyspark.sql.functions import col, lit, abs, count, avg, max, when, regexp_replace
 import pandas as pd
 from pyspark.sql.functions import lit
 from pyspark.sql.functions import monotonically_increasing_id
 
 
-def save_to_hbase_flights_with_earthquakes(dataframe, table_name):
+import happybase
+
+def check_hbase_table_structure(table_name):
     """
-    Save a Spark DataFrame to HBase using the 'org.apache.hadoop.hbase.spark' connector.
+    Check the structure of an HBase table and its column families.
+
+    Args:
+    - table_name: Name of the HBase table to inspect.
+    """
+    # Connect to HBase Thrift server
+    connection = happybase.Connection(host='localhost', port=9090)
+    
+    if table_name.encode() in connection.tables():
+        print(f"Table '{table_name}' exists.")
+        table = connection.table(table_name)
+        
+        # Fetch column families
+        families = table.families()
+        print(f"Column Families in '{table_name}':")
+        for family, attributes in families.items():
+            print(f"  - Family: {family.decode()} | Attributes: {attributes}")
+    else:
+        print(f"Table '{table_name}' does not exist.")
+    
+    connection.close()
+
+
+def save_to_hbase_with_happybase(pandas_df, table_name):
+    """
+    Save a Pandas DataFrame to HBase using HappyBase.
     
     Args:
-    - dataframe: Spark DataFrame to save.
+    - pandas_df: Pandas DataFrame to save.
     - table_name: Name of the HBase table.
     """
-    hbase_catalog_flights_with_earthquakes = {
-        "table": {"namespace": "default", "name": table_name},
-        "rowkey": "departure_iata",  # Use a unique column as the row key (or concatenate multiple columns if needed)
-        "columns": {
-            "departure_iata": {"cf": "info", "col": "departure_iata", "type": "string"},
-            "arrival_iata": {"cf": "info", "col": "arrival_iata", "type": "string"},
-            "arrival_delay": {"cf": "info", "col": "arrival_delay", "type": "string"},
-            "arrival_scheduled": {"cf": "info", "col": "arrival_scheduled", "type": "string"},
-            "departure_actual": {"cf": "info", "col": "departure_actual", "type": "string"},
-            "departure_delay": {"cf": "info", "col": "departure_delay", "type": "string"},
-            "departure_scheduled": {"cf": "info", "col": "departure_scheduled", "type": "string"},
-            "flight_status": {"cf": "info", "col": "flight_status", "type": "string"},
-            "arrival_airport": {"cf": "info", "col": "arrival_airport", "type": "string"},
-            "arrival_city": {"cf": "info", "col": "arrival_city", "type": "string"},
-            "arrival_state": {"cf": "info", "col": "arrival_state", "type": "string"},
-            "arrival_country": {"cf": "info", "col": "arrival_country", "type": "string"},
-            "arrival_latitude": {"cf": "info", "col": "arrival_latitude", "type": "string"},
-            "arrival_longitude": {"cf": "info", "col": "arrival_longitude", "type": "string"},
-            "departure_airport": {"cf": "info", "col": "departure_airport", "type": "string"},
-            "departure_city": {"cf": "info", "col": "departure_city", "type": "string"},
-            "departure_state": {"cf": "info", "col": "departure_state", "type": "string"},
-            "departure_country": {"cf": "info", "col": "departure_country", "type": "string"},
-            "departure_latitude": {"cf": "info", "col": "departure_latitude", "type": "string"},
-            "departure_longitude": {"cf": "info", "col": "departure_longitude", "type": "string"},
-            "earthquake_occurred": {"cf": "info", "col": "earthquake_occurred", "type": "boolean"},
-            "earthquake_type": {"cf": "info", "col": "earthquake_type", "type": "string"},
-            "earthquake_magnitude": {"cf": "info", "col": "earthquake_magnitude", "type": "string"},
-            "earthquake_latitude": {"cf": "info", "col": "earthquake_latitude", "type": "string"},
-            "earthquake_longitude": {"cf": "info", "col": "earthquake_longitude", "type": "string"}
+    # Connect to HBase Thrift server
+    connection = happybase.Connection(host='localhost', port=9090)
+    
+    # Create the table if it doesn't exist
+    if table_name.encode() not in connection.tables():
+        connection.create_table(
+            table_name,
+            {
+                'info': dict()  # Column family
+            }
+        )
+
+    table = connection.table(table_name)
+
+    # Write each row to the HBase table
+    for _, row in pandas_df.iterrows():
+        # Use a unique key, e.g., "departure_iata+arrival_iata"
+        row_key = f"{row['departure_iata']}_{row['arrival_iata']}"
+        # Prepare data in the column family format
+        data = {
+            f"info:{col}": str(row[col]) if row[col] is not None else ""  # Convert all values to strings
+            for col in pandas_df.columns
         }
-    }
+        # Save the row
+        table.put(row_key, data)
 
-    dataframe.write\
-        .options(catalog=str(hbase_catalog_flights_with_earthquakes), newtable="5")\
-        .format("org.apache.hadoop.hbase.spark")\
-        .save()
-
-
-def save_spark_df_as_csv(spark_df, filename):
-    """
-    Convert a Spark DataFrame to a Pandas DataFrame and save it as a CSV file.
-
-    Args:
-    - spark_df: The Spark DataFrame to convert.
-    - filename: The name of the file to save the data to.
-    """
-    # Convert Spark DataFrame to Pandas DataFrame
-    pandas_df = spark_df.toPandas()
-
-    # Save the Pandas DataFrame as a CSV file
-    pandas_df.to_csv(filename, index=False, encoding='utf-8')
+    # Close the connection
+    connection.close()
 
 def enrich_flights_with_earthquakes(enriched_flights_df, earthquake_df, spatial_radius_km=25):
     """
@@ -113,6 +117,8 @@ def enrich_flights_with_earthquakes(enriched_flights_df, earthquake_df, spatial_
     )
 
     return enriched_flights
+
+
 
 def calculate_distance(lat1, lon1, lat2, lon2):
     """
@@ -284,6 +290,48 @@ def analyze_iata_coverage(flights_df, airports_df):
         "departure_iata_coverage": departure_iata_coverage
     }
 
+def test_enrich_flights_with_earthquakes(spark):
+    # Przykładowe dane lotów
+    flights_data = [
+        {"arrival_latitude": 40.0, "arrival_longitude": -75.0, "arrival_iata": "JFK"},
+        {"arrival_latitude": 34.0, "arrival_longitude": -118.0, "arrival_iata": "LAX"},
+    ]
+    flights_df = spark.createDataFrame(flights_data)
+
+    # Przykładowe dane trzęsień ziemi
+    earthquake_data = [
+        {"latitude": 40.1, "longitude": -75.1, "magnitude": 5.0},
+        {"latitude": 35.0, "longitude": -118.0, "magnitude": 4.5},
+    ]
+    earthquake_df = spark.createDataFrame(earthquake_data)
+
+    # Wywołanie testowanej funkcji
+    enriched_df = enrich_flights_with_earthquakes(flights_df, earthquake_df, spatial_radius_km=15)
+
+    # Pobranie wyników do Pythonowego list dla porównania
+    results = enriched_df.select("arrival_iata", "earthquake_occurred").collect()
+    expected_results = [
+        {"arrival_iata": "JFK", "earthquake_occurred": True},
+        {"arrival_iata": "LAX", "earthquake_occurred": False},
+    ]
+
+def enrich_flights_with_earthquakes(flights_df, earthquake_df, spatial_radius_km=25):
+    proximity_threshold = spatial_radius_km / 111.32
+    flights_with_earthquakes = flights_df.join(
+        earthquake_df,
+        (
+            abs(flights_df["arrival_latitude"] - earthquake_df["latitude"]) < proximity_threshold
+        ) & (
+            abs(flights_df["arrival_longitude"] - earthquake_df["longitude"]) < proximity_threshold
+        ),
+        how="left"
+    ).withColumn(
+        "earthquake_occurred",
+        when(col("magnitude").isNotNull(), True).otherwise(False)
+    )
+    return flights_with_earthquakes
+
+
 def enrich_flights_with_airports(flights_df, airports_df):
     """
     Join flights with airports data to add details for both arrival and departure airports.
@@ -325,6 +373,19 @@ def enrich_flights_with_airports(flights_df, airports_df):
     enriched_df = enriched_df.join(
         departure_airports, on="departure_iata", how="left"
     )
+
+    # Replace 'United States' with 'USA' in country-related columns
+    country_columns = ['arrival_country', 'departure_country']
+    for column in country_columns:
+        enriched_df = enriched_df.withColumn(column, when(col(column) == 'United States', 'USA').otherwise(col(column)))
+
+    # Remove the word 'airport' (case insensitive) from arrival_airport and departure_airport
+    airport_columns = ['arrival_airport', 'departure_airport']
+    for column in airport_columns:
+        enriched_df = enriched_df.withColumn(column, regexp_replace(col(column), '(?i)\\s*airport', ''))
+
+    # Remove duplicates
+    enriched_df = enriched_df.dropDuplicates()
     
     return enriched_df
 
@@ -385,9 +446,9 @@ if __name__ == "__main__":
     #enriched_flights_df.write.mode("overwrite").parquet(output_path)
 
     # Analyze IATA coverage
-    #print("IATA Coverage Analysis:")
-    #results = analyze_iata_coverage(flights_df, airports_df)
-    #print(results)
+    print("IATA Coverage Analysis:")
+    results = analyze_iata_coverage(flights_df, airports_df)
+    print(results)
 
     # Analyze earthquake impact on flights
     print("Analyzing earthquake impact on flights...")
@@ -439,66 +500,10 @@ if __name__ == "__main__":
         col("earthquake_occurred") == True
     ).count()
 
-    # # Calculate the percentage
-    # if total_flights_count > 0:
-    #     percentage_disturbed = (flights_disturbed_count / total_flights_count) * 100
-    #     print(f"Percentage of flights impacted by earthquakes: {percentage_disturbed:.2f}%")
-    # else:
-    #     print("No flights in the dataset to calculate the percentage.")
+    # Example usage
+    pandas_df = flights_with_earthquakes_df.toPandas()
 
-    # # Save the DataFrames as CSV files using the function
-    # save_spark_df_as_csv(enriched_flights_df, "enriched_flights.csv")
-    # save_spark_df_as_csv(earthquake_df, "earthquake.csv")
-    # save_spark_df_as_csv(flights_df, "flights.csv")
-    # save_spark_df_as_csv(airports_df, "airports.csv")
-    # save_spark_df_as_csv(flights_with_earthquakes_df, "flights_with_earthquakes.csv")
-    # save_spark_df_as_csv(final_summary_df, "final_summary.csv")
-
-    # Add unique IDs to each DataFrame
-    flights_with_earthquakes_df = flights_with_earthquakes_df.withColumn("id", monotonically_increasing_id())
-    final_summary_df = final_summary_df.withColumn("id", monotonically_increasing_id())
-
-    save_to_hbase_flights_with_earthquakes(flights_with_earthquakes_df, "flights_with_earthquakes")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-#def find_unmatched_iata(flights_df, airports_df):
-#     """
-#     Find IATA codes and their corresponding countries from airports_df 
-#     that don't match the arrival_iata or departure_iata in flights_df.
-#     """
-#     # Find unmatched arrival IATA codes
-#     unmatched_arrival = airports_df.join(
-#         flights_df.select("arrival_iata").distinct(),
-#         airports_df["IATA"] == flights_df["arrival_iata"],
-#         "left_anti"  # Anti-join to get rows in airports_df but not in flights_df
-#     ).select("IATA", "COUNTRY")
-
-#     # Find unmatched departure IATA codes
-#     unmatched_departure = airports_df.join(
-#         flights_df.select("departure_iata").distinct(),
-#         airports_df["IATA"] == flights_df["departure_iata"],
-#         "left_anti"
-#     ).select("IATA", "COUNTRY")
-
-#     # Combine unmatched IATA codes for arrival and departure
-#     unmatched_combined = unmatched_arrival.union(unmatched_departure).distinct()
-
-#     return unmatched_combined
+    # Save to HBase
+    save_to_hbase_with_happybase(pandas_df, "flights_with_earthquakes")
+    # Call the function
+    check_hbase_table_structure("flights_with_earthquakes")
