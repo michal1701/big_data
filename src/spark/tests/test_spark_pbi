@@ -1,0 +1,63 @@
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col
+from data_ingestion import ingest_all_world_airport_data, merge_airport_datasets, ingest_earthquake_data, ingest_flight_data, ingest_airport_data, save_to_hdfs 
+import os
+from pyspark.sql.functions import col, lit, abs, count, avg, max, when, regexp_replace
+import pandas as pd
+from pyspark.sql.functions import lit
+from pyspark.sql.functions import monotonically_increasing_id
+
+
+import happybase
+
+def transform_data(enriched_flights_df, earthquake_df, spatial_radius_km=50):
+    """
+    Perform transformations in Spark:
+    - Identify airports impacted by earthquakes within a spatial radius.
+    - Count earthquakes and flights impacted for each airport.
+
+    Args:
+    - enriched_flights_df: DataFrame containing enriched flight data with airport details.
+    - earthquake_df: DataFrame containing earthquake data.
+    - spatial_radius_km: Radius in kilometers to consider proximity.
+
+    Returns:
+    - DataFrame summarizing earthquake and flight impacts by airport.
+    """
+    # Convert spatial radius from kilometers to degrees (~111.32 km per degree latitude)
+    proximity_threshold = spatial_radius_km / 111.32
+
+    # Identify impacted airports by comparing proximity to earthquakes
+    impacted_airports = enriched_flights_df.join(
+        earthquake_df,
+        (
+            abs(enriched_flights_df["arrival_latitude"] - earthquake_df["latitude"]) < proximity_threshold
+        ) & (
+            abs(enriched_flights_df["arrival_longitude"] - earthquake_df["longitude"]) < proximity_threshold
+        ),
+        how="inner"
+    )
+
+    # Aggregate data: count earthquakes and find max magnitude per airport
+    aggregated_airports = impacted_airports.groupBy(
+        "arrival_iata", "arrival_airport", "arrival_city", "arrival_country"
+    ).agg(
+        count("*").alias("earthquake_count"),
+        max("magnitude").alias("max_magnitude")
+    )
+
+    # Aggregate flight impact data
+    flights_impact_summary = impacted_airports.groupBy(
+        "arrival_iata", "arrival_airport"
+    ).agg(
+        count("*").alias("flights_impacted_count")
+    )
+
+    # Join earthquake and flight impact summaries
+    final_summary = aggregated_airports.join(
+        flights_impact_summary,
+        on=["arrival_iata", "arrival_airport"],
+        how="left"
+    )
+
+    return final_summary
